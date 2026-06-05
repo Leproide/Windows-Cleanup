@@ -1,8 +1,10 @@
-# Clean-System.ps1
+# Windows Cleanup
 
 A single-file PowerShell tool that reclaims disk space on Windows. Its core removes **orphaned `.msi`/`.msp` packages** from `C:\Windows\Installer`, and it also runs a few standard cleanup tasks (WinSxS, Windows Update cache, temp folders, Delivery Optimization).
 
 Inspired by the excellent free utility **[PatchCleaner](https://www.homedev.com.au/free/patchcleaner)** by HomeDev. This is an independent PowerShell implementation of the same publicly documented idea, run in **aggressive** mode: it applies **no exclude filters**, so Adobe/Acrobat orphans are removed too.
+
+This script can free up 60+ GB in the worst-case scenario.
 
 > ⚠️ **Deletion under `C:\Windows\Installer` is irreversible.** Always run with `$DryRun = $true` first and review the output.
 
