@@ -1,4 +1,4 @@
-# Clean-System.ps1
+# Windows-Cleanup
 
 A single-file PowerShell cleanup tool for Windows. Its core is a **faithful, reverse-engineered re-implementation of [PatchCleaner](https://www.homedev.com.au/free/patchcleaner) (HomeDev)** that removes orphaned `.msi`/`.msp` files from `C:\Windows\Installer`, plus a few standard disk-cleanup steps (WinSxS, Windows Update cache, temp folders, Delivery Optimization).
 
