@@ -111,4 +111,4 @@ Provided **as-is, without warranty**. You are responsible for what you delete on
 
 ## License
 
-MIT (or your preferred license — add a `LICENSE` file).
+GPL v3
