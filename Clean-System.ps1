@@ -5,28 +5,25 @@ leprechaun@huginn.ovh
 
 
 .SYNOPSIS
-    Faithful re-implementation of PatchCleaner's logic (HomeDev), reverse-engineered
-    from its assemblies, plus WinSxS and system cache cleanup. AGGRESSIVE mode: no
-    exclusions (Adobe included).
+    Reclaims disk space on Windows: removes orphaned .msi/.msp packages from the
+    Windows Installer store, plus WinSxS and system cache cleanup. AGGRESSIVE mode:
+    no exclusions (Adobe included). Inspired by the free PatchCleaner utility.
 
 .DESCRIPTION
-    Algorithm identical to PatchCleaner.Classes.PatchCleanerManager:
-      - SetupAllFiles      : enumerate C:\Windows\Installer\*.msp and *.msi (non-recursive).
-      - SetupRequiredFiles : run "cscript //B //Nologo WMIProducts.vbs" (the same HomeDev
-                             script: WindowsInstaller.Installer -> Products/
-                             ProductInfo(LocalPackage) + Patches/PatchInfo(LocalPackage)),
-                             which writes products.txt/patches.txt; each line is split on
-                             "||| " and the LAST field is taken (the LocalPackage path).
-                             An errors.txt file means the VBScript engine is broken.
-      - FindOrphanedFiles  : orphan = a store file whose Path.GetFileName does not match
-                             (String.Compare ignoreCase, InvariantCulture) the GetFileName
-                             of any required file. Comparison is by FILE NAME.
-    No registry fallback: if the VBScript yields nothing, the step aborts (just like
-    PatchCleaner, which throws), so it never proceeds with a wrong/oversized "in use" set.
+    Installer-store cleanup, based on the well-documented technique for safely
+    deleting unused packages from C:\Windows\Installer:
+      1) Enumerate C:\Windows\Installer\*.msp and *.msi (non-recursive).
+      2) Determine which packages are still in use by querying installed products
+         and applied patches through the Windows Installer automation interface
+         (Products/ProductInfo(LocalPackage) + Patches/PatchInfo(LocalPackage)),
+         executed via cscript for reliability. The package paths are read back and
+         reduced to their file names.
+      3) An installer-store file is an ORPHAN when its file name is not referenced
+         by any in-use package (case-insensitive comparison).
+    If the in-use set cannot be determined, the step aborts and deletes nothing
+    (no broad registry guesswork).
 
-    Difference vs default PatchCleaner: PatchCleaner ships with ExcludeFilters = ["Acrobat"]
-    and therefore skips Adobe/Acrobat orphans. This script applies NO exclude filters, so
-    Adobe is included in deletion (equivalent to PatchCleaner with an empty ExcludeFilters).
+    No exclude filters are applied, so Adobe/Acrobat orphans are removed too.
 
 .NOTES
     Run as Administrator (the script auto-elevates). Requires cscript.exe (always present).
@@ -82,8 +79,10 @@ function Get-FolderSize {
 }
 
 
-# --------------------------- PatchCleaner core -------------------------------
-# Original HomeDev WMIProducts.vbs (output files are relative to WorkingDirectory).
+# --------------------------- Installer-store cleanup -------------------------
+# Helper VBScript: enumerates installed products and applied patches via the
+# Windows Installer automation interface and writes their cached package paths.
+# Output files are created relative to the process WorkingDirectory.
 $Script:WMIProductsVbs = @'
 On Error Resume Next
 Dim msi : Set msi = CreateObject("WindowsInstaller.Installer")
@@ -122,7 +121,7 @@ End Sub
 
 function Get-MsiRequiredFiles {
     # Returns a HashSet (OrdinalIgnoreCase) of the FILE NAMES referenced by products
-    # and patches, obtained via cscript/WMIProducts.vbs (PatchCleaner's method).
+    # and patches, obtained by running the helper VBScript through cscript.
     # Returns $null on failure (errors.txt / no output).
     $set = New-Object 'System.Collections.Generic.HashSet[string]' (
         [StringComparer]::OrdinalIgnoreCase)
@@ -142,8 +141,8 @@ function Get-MsiRequiredFiles {
     # CreateTextFile/cscript use ANSI: save the VBS as Default (ANSI) encoding.
     Set-Content -LiteralPath $vbsPath -Value $Script:WMIProductsVbs -Encoding Default
 
-    # Invocation identical to PatchCleaner: ProcessStartInfo, WorkingDirectory set to
-    # the work folder, relative VBS name, hidden window, wait for exit.
+    # Run the VBScript: ProcessStartInfo with WorkingDirectory set to the work
+    # folder, relative VBS name, hidden window, wait for exit.
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName         = $cscript
     $psi.Arguments        = '//B //Nologo WMIProducts.vbs'
@@ -160,9 +159,9 @@ function Get-MsiRequiredFiles {
         return $null
     }
 
-    # Like PatchCleaner: errors.txt is FATAL only if products.txt does not exist
-    # (broken VBScript engine). If products.txt exists, per-product errors
-    # (e.g. 80004005 on ProductInfo) are tolerated: those products are skipped.
+    # errors.txt is FATAL only if products.txt does not exist (broken VBScript
+    # engine). If products.txt exists, per-product errors (e.g. 80004005 on
+    # ProductInfo) are tolerated: those products are simply skipped.
     if (-not (Test-Path $prodTxt)) {
         Write-Host "products.txt was not generated: unable to determine products." -ForegroundColor Red
         if (Test-Path $errTxt) {
@@ -173,11 +172,11 @@ function Get-MsiRequiredFiles {
     }
     if (Test-Path $errTxt) {
         $nerr = (Get-Content -LiteralPath $errTxt -EA SilentlyContinue | Measure-Object).Count
-        Write-Host ("Warning: {0} product(s) skipped due to MSI errors (same as PatchCleaner)." -f $nerr) `
+        Write-Host ("Warning: {0} product(s) skipped due to MSI errors." -f $nerr) `
             -ForegroundColor DarkYellow
     }
 
-    # Parsing identical to PatchCleaner: Split("||| ") and take the LAST field = LocalPackage.
+    # Each line is "...||| ...||| <LocalPackage>": split on "||| " and take the last field.
     foreach ($file in @($prodTxt, $patchTxt)) {
         if (Test-Path $file) {
             Get-Content -LiteralPath $file -EA SilentlyContinue | ForEach-Object {
@@ -194,8 +193,8 @@ function Get-MsiRequiredFiles {
     ,$set
 }
 
-# Replicates DeleteOrphanedFiles: clears attributes (ReadOnly/Hidden), and on an
-# access error takes ownership + grants Everyone Full Control, then retries Delete.
+# Deletes an orphan: clears ReadOnly/Hidden attributes and, on an access-denied
+# error, takes ownership + grants Everyone Full Control, then retries the delete.
 function Remove-OrphanFile {
     param([string]$Path)
     try { [System.IO.File]::SetAttributes($Path, [System.IO.FileAttributes]::Normal) } catch {}
@@ -216,7 +215,7 @@ function Remove-OrphanFile {
 }
 
 function Invoke-PatchCleaner {
-    Write-Section "PatchCleaner: orphaned files in C:\Windows\Installer"
+    Write-Section "Installer store: orphaned files in C:\Windows\Installer"
     $installerDir = Join-Path $env:WINDIR 'Installer'
     if (-not (Test-Path $installerDir)) { Write-Host "Folder $installerDir not found."; return }
 
@@ -228,11 +227,11 @@ function Invoke-PatchCleaner {
     }
     Write-Host ("Required files (products + applied patches): {0}" -f $required.Count)
 
-    # SetupAllFiles: *.msi and *.msp in the store root (hidden files included).
+    # All *.msi and *.msp in the store root (hidden files included).
     $allFiles = Get-ChildItem -LiteralPath $installerDir -File -Force -ErrorAction SilentlyContinue |
                 Where-Object { $_.Extension -in '.msi', '.msp' }
 
-    # FindOrphanedFiles: orphan = file name not present among the required (case-insensitive).
+    # Orphan = file name not present among the required (case-insensitive).
     $orphans   = $allFiles | Where-Object { -not $required.Contains($_.Name) }
     $totalSize = ($orphans | Measure-Object -Property Length -Sum).Sum
     if (-not $totalSize) { $totalSize = 0 }
